@@ -24,12 +24,12 @@
       :host {
         display: block;
          height: 100%;
-         min-height: 300px;
+         min-height: 500px;
         margin: 0;
         padding: 0;
       }
       :host #map{
-        height: 600px;
+        height: 700px;
       }
       :host .toolbar{
           position: absolute;
@@ -57,17 +57,43 @@
          <input type="number" min="30" max="75"  value={{sidelap::change}} />
            <label> Overlap (%)</label>
          <input type="number" min="30" max="75"  value={{frontlap::change}} />
+         <h4>Advanced</h4>
+                    <label> Focal Length (mm)</label>
+         <input type="text"   value={{focallength::change}} />
+                             <label> Sensor Width (mm)</label>
+         <input type="text"   value={{sensorwidth::change}} />
+                                      <label> Sensor Height (mm)</label>
+         <input type="text"   value={{sensorheight::change}} />
+
+                                      <label> Image Width (px)</label>
+         <input type="text"   value={{imagewidth::change}} />
+                                      <label> Image Height (px)</label>
+         <input type="text"   value={{imageheight::change}} />
+
+
     
 
 
      <div>
          <button on-tap="_exportLitchi">Litchi Export (CSV)</button>
      </div>
+     <div hidden$="{{!hasFlight}}">
      <h3>Flight Info</h3>
      <label>Image Count</label>
      <span>{{imagecount}}</span> Images
      <label>Resolution</label>
      <span>{{inpx}}</span> in/px
+
+         <label>Distance</label>
+     <span>{{totalDistanceString}}</span> 
+         <label>Flight time @ 22mph</label>
+     <span>{{flighttime}}</span> 
+            <label>Area (acres)</label>
+     <span>{{area}}</span> ac
+     </div>
+
+
+     
 
          
      </div>
@@ -91,7 +117,7 @@
                 },
                 altitude: {
                     type: Number,
-                    value: 60,
+                    value: 200,
                     observer: '_angleUpdated'
                 },
 
@@ -105,6 +131,31 @@
                     value: 30,
                     observer: '_angleUpdated'
                 },
+                focallength: {
+                    type: Number,
+                    value: 5.0,
+                    observer: '_angleUpdated'
+                },
+                sensorwidth: {
+                    type: Number,
+                    value: 6.17,
+                    observer: '_angleUpdated'
+                },
+                sensorheight: {
+                    type: Number,
+                    value: 4.55,
+                    observer: '_angleUpdated'
+                },
+                imagewidth: {
+                    type: Number,
+                    value: 4000,
+                    observer: '_angleUpdated'
+                },
+                imageheight: {
+                    type: Number,
+                    value: 3000,
+                    observer: '_angleUpdated'
+                },
             },
             attached: function() {
                 var model = this;
@@ -112,13 +163,8 @@
                     model.map = L.map(this.$.map, {
                         zoomControl: false
                     }).setView([38.14, -98.82], 4);
-                    model.map.setView([41.185, -104.82], 16);
+                    // model.map.setView([41.185, -104.82], 16);
 
-
-
-                    // L.tileLayer('http://{s}.tile.osm.org/{z}/{x}/{y}.png', {
-                    //     attribution: '&copy; <a href="http://osm.org/copyright">OpenStreetMap</a> contributors'
-                    // }).addTo(model.map);
 
 
                     L.control.zoom({
@@ -159,17 +205,6 @@
                     L.esri.basemapLayer("Imagery").addTo(model.map);
                     L.esri.basemapLayer("ImageryLabels").addTo(model.map);
 
-                    // L.control.layers({
-
-                    //     "google": L.tileLayer('http://www.google.cn/maps/vt?lyrs=s@189&gl=cn&x={x}&y={y}&z={z}', {
-                    //         attribution: 'google'
-                    //     })
-                    // }, {
-                    //     'drawlayer': drawnItems
-                    // }, {
-                    //     position: 'topleft',
-                    //     collapsed: false
-                    // }).addTo(model.map);
 
 
                     model.map.on('draw:created', function(e) {
@@ -190,7 +225,37 @@
 
                             model.poly = layer;
                             model.updateFlightPlan();
+
+                            model.map.fitBounds(layer.getBounds());
+
+
+
                         }
+                    });
+
+
+                    model.map.on('draw:editstart', function(e) {
+
+
+
+
+                        model.flightLayer.clearLayers();
+
+
+
+
+                    });
+
+                    model.map.on('draw:deletestart', function(e) {
+
+
+
+
+                        model.flightLayer.clearLayers();
+
+
+
+
                     });
 
 
@@ -202,6 +267,7 @@
                                 //Do marker specific actions here
                                 model.poly = layer;
                                 model.updateFlightPlan();
+
                             }
                         });
 
@@ -245,10 +311,22 @@
                     viewheight: viewheight,
                     viewwidth: viewwidth
                 };
-                // fovh = viewwidth;
-                // fovv = viewheight;
+
             },
 
+
+
+            pad: function(num) {
+                return ("0" + num).slice(-2);
+            },
+
+            hhmmss: function(secs) {
+                var minutes = Math.floor(secs / 60);
+                secs = secs % 60;
+                var hours = Math.floor(minutes / 60)
+                minutes = minutes % 60;
+                return this.pad(hours) + ":" + this.pad(minutes) + ":" + this.pad(secs);
+            },
             updateFlightPlan: function() {
 
 
@@ -261,26 +339,34 @@
 
                 model.debounce('update-flight', function() {
                     if (!model.poly) {
+                        model.hasFlight = false;
                         return;
                     }
                     model.flightLayer.clearLayers();
                     // here you got the polygon points
                     var points = model.poly._latlngs;
 
+
+                    var aream2 = L.GeometryUtil.geodesicArea(model.poly.getLatLngs()[0]);
+                    var acres = aream2 * 0.000247105;
+                    model.area = acres.toFixed(2);
+
                     // here you can get it in geojson format
                     var geojson = model.poly.toGeoJSON();
-                    console.log(geojson);
+
+
+
 
                     // calculate from mavic pro dems
-                    var imagewidth = 4000;
-                    var imageheight = 3000;
+                    var imagewidth = model.imagewidth;
+                    var imageheight = model.imageheight;
                     var overlap = model.frontlap;
                     var sidelap = model.sidelap;
-                    var fov = model.getFOV(model.altitude * 0.3048, 5, 6.17, 4.55);
+                    var fov = model.getFOV(model.altitude * 0.3048, model.focallength, model.sensorwidth, model.sensorheight);
                     var viewheight = fov.viewheight;
                     var viewwidth = fov.viewwidth;
-                    model.cmpx = ((viewheight / imageheight) * 100);
-                    model.inpx = (((viewheight / imageheight) * 100) * 0.393701);
+                    model.cmpx = ((viewheight / imageheight) * 100).toFixed(2);
+                    model.inpx = (((viewheight / imageheight) * 100) * 0.393701).toFixed(2);
                     var spacing = ((1 - (overlap / 100.0)) * viewheight);
                     var distance = ((1 - (sidelap / 100.0)) * viewwidth);
 
@@ -304,10 +390,17 @@
                     var totalFeet = grid.distance * 3.28084;
 
                     if (totalFeet > 4000) {
-                        model.totalDistanceString = (totalFeet / 5280) + "m";
+                        model.totalDistanceString = (totalFeet / 5280).toFixed(2) + "m";
                     } else {
-                        model.totalDistanceString = totalFeet + "ft";
+                        model.totalDistanceString = totalFeet.toFixed(2) + "ft";
                     }
+
+
+                    var mph = 22;
+                    // seconds
+                    model.flighttime = model.hhmmss((((totalFeet / 5280) / mph) * 60) * 60);
+
+
 
 
 
@@ -318,13 +411,25 @@
                     var i = 1;
                     var count = 0;
 
+                    var lastBearing = model.angle;
 
+                    for (var x = 0; x < grid.plan.length; x++) {
+                        var llp = grid.plan[x];
 
+                        if (x + 1 < model.plan.length) {
+                            var nextllp = model.plan[x + 1];
+                            lastBearing = llp.getBearing(nextllp);
+                            llp.nextBearing = lastBearing;
+                        }
 
-                    grid.plan.forEach(function(llp) {
-
-                        if (llp.tag !== "M") {
+                        if (llp.tag && llp.tag !== "M") {
                             pointList.push(new L.LatLng(llp.lat, llp.lng));
+                            // draw footprints
+
+
+
+
+
                         } else {
                             count++;
                         }
@@ -332,8 +437,15 @@
                         marker.bindPopup("Point " + i)
                         model.flightLayer.addLayer(marker);
 
+
+                        var startangle = lastBearing;
+                        var angle1 = startangle - (Math.sin((viewheight / 2.0) / (viewwidth / 2.0)) * model.rad2deg);
+                        var dist1 = Math.sqrt(Math.pow(viewheight / 2.0, 2) + Math.pow(viewwidth / 2.0, 2));
+
                         i++;
-                    });
+                    }
+
+
 
                     model.imagecount = count;
 
@@ -350,7 +462,7 @@
                     //firstpolyline.addTo(model.flightLayer);
 
                     model.flightLayer.addLayer(model.firstpolyline);
-
+                    model.hasFlight = true;
                 });
             },
 
@@ -464,48 +576,7 @@
                     }
                 }
 
-                // model.plan.forEach(function(llp) {
-                //     var row = [llp.lat, //'latitude',
-                //         llp.lng, //'longitude',
-                //         llp.alt, //'altitude(m)',
-                //         model.angle, //'heading(deg)',
-                //         0, //'curvesize(m)',
-                //         0, //'rotationdir',
-                //         0, //'gimbalmode',
-                //         -90, //'gimbalpitchangle',
-                //         5, //'actiontype1',
-                //         -90, // 'actionparam1',
-                //         1, //'actiontype2',
-                //         0, //'actionparam2',
-                //         -1, //'actiontype3',
-                //         0, //'actionparam3',
-                //         -1, //'actiontype4',
-                //         0, //'actionparam4',
-                //         -1, //'actiontype5',
-                //         0, //'actionparam5',
-                //         -1, //'actiontype6',
-                //         0, //'actionparam6',
-                //         -1, //'actiontype7',
-                //         0, //'actionparam7',
-                //         -1, //'actiontype8',
-                //         0, //'actionparam8',
-                //         -1, //'actiontype9',
-                //         0, //'actionparam9',
-                //         -1, //'actiontype10',
-                //         0, //'actionparam10',
-                //         -1, //'actiontype11',
-                //         0, //'actionparam11',
-                //         -1, //'actiontype12',
-                //         0, //'actionparam12',
-                //         -1, //'actiontype13',
-                //         0, //'actionparam13',
-                //         -1, //'actiontype14',
-                //         0, //'actionparam14',
-                //         -1, //'actiontype15',
-                //         0, //'actionparam15'
-                //     ];
-                //     csvContent += row.join(',') + "\n";
-                // });
+
 
 
 
