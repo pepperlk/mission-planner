@@ -1,0 +1,526 @@
+<link rel="import" href="../polymer/polymer.html">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.0.3/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.0.3/dist/leaflet.js"></script>
+<script src="https://unpkg.com/esri-leaflet@2.0.8"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/0.4.9/leaflet.draw.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/0.4.9/leaflet.draw.js"></script>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.4.3/proj4.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/proj4leaflet/1.0.1/proj4leaflet.min.js"></script>
+
+
+<link rel="import" href="grid.html">
+
+<!--
+`mission-planner`
+
+
+@demo demo/index.html 
+-->
+
+<dom-module id="mission-planner">
+    <template>
+    <style>
+      :host {
+        display: block;
+         height: 100%;
+         min-height: 300px;
+        margin: 0;
+        padding: 0;
+      }
+      :host #map{
+        height: 600px;
+      }
+      :host .toolbar{
+          position: absolute;
+          background-color: rgba(245, 242, 240, 0.67);
+          z-index: 5000;
+          width: 250px;
+          height: 100%;
+          left: 0;
+          top:0;
+          bottom: 0;
+      }
+      :host label{
+          display: block;
+      }
+    </style>
+    <div style="position: relative;">
+     <div id="map"></div>
+     <div class="toolbar">
+         <h2>Plan Flight</h2>
+           <label> Altitude (ft)</label>
+         <input type="number" min="20" max="1600"  value={{altitude::change}} />
+         <label> Grid Direction (Course)</label>
+         <input type="number" min="0" max="360"  value={{angle::change}} />
+           <label> Sidelap (%)</label>
+         <input type="number" min="30" max="75"  value={{sidelap::change}} />
+           <label> Overlap (%)</label>
+         <input type="number" min="30" max="75"  value={{frontlap::change}} />
+    
+
+
+     <div>
+         <button on-tap="_exportLitchi">Litchi Export (CSV)</button>
+     </div>
+     <h3>Flight Info</h3>
+     <label>Image Count</label>
+     <span>{{imagecount}}</span> Images
+     <label>Resolution</label>
+     <span>{{inpx}}</span> in/px
+
+         
+     </div>
+    </div>
+  </template>
+
+    <script>
+        Polymer({
+
+            is: 'mission-planner',
+
+
+
+            behaviors: [gridBehavior],
+
+            properties: {
+                angle: {
+                    type: Number,
+                    value: 90,
+                    observer: '_updatePlan'
+                },
+                altitude: {
+                    type: Number,
+                    value: 60,
+                    observer: '_angleUpdated'
+                },
+
+                sidelap: {
+                    type: Number,
+                    value: 30,
+                    observer: '_angleUpdated'
+                },
+                frontlap: {
+                    type: Number,
+                    value: 30,
+                    observer: '_angleUpdated'
+                },
+            },
+            attached: function() {
+                var model = this;
+                this.async(function() {
+                    model.map = L.map(this.$.map, {
+                        zoomControl: false
+                    }).setView([38.14, -98.82], 4);
+                    model.map.setView([41.185, -104.82], 16);
+
+
+
+                    // L.tileLayer('http://{s}.tile.osm.org/{z}/{x}/{y}.png', {
+                    //     attribution: '&copy; <a href="http://osm.org/copyright">OpenStreetMap</a> contributors'
+                    // }).addTo(model.map);
+
+
+                    L.control.zoom({
+                        position: 'topright'
+                    }).addTo(model.map);
+
+                    var drawnItems = new L.FeatureGroup();
+                    model.map.addLayer(drawnItems);
+
+                    model.flightLayer = new L.FeatureGroup();
+                    model.map.addLayer(model.flightLayer);
+                    var drawControl = new L.Control.Draw({
+                        position: 'topright',
+                        draw: {
+                            marker: false,
+                            circle: false,
+                            polyline: false,
+                            polygon: {
+                                allowIntersection: false,
+                                showArea: true
+                            },
+                            rectangle: {
+                                allowIntersection: false,
+                                showArea: true
+                            },
+                        },
+                        edit: {
+                            featureGroup: drawnItems
+                        }
+                    });
+                    model.map.addControl(drawControl);
+                    model.map.on(L.Draw.Event.CREATED, function(event) {
+                        var layer = event.layer;
+
+                        drawnItems.addLayer(layer);
+                    });
+
+                    L.esri.basemapLayer("Imagery").addTo(model.map);
+                    L.esri.basemapLayer("ImageryLabels").addTo(model.map);
+
+                    // L.control.layers({
+
+                    //     "google": L.tileLayer('http://www.google.cn/maps/vt?lyrs=s@189&gl=cn&x={x}&y={y}&z={z}', {
+                    //         attribution: 'google'
+                    //     })
+                    // }, {
+                    //     'drawlayer': drawnItems
+                    // }, {
+                    //     position: 'topleft',
+                    //     collapsed: false
+                    // }).addTo(model.map);
+
+
+                    model.map.on('draw:created', function(e) {
+                        console.log("something was created; hiding draw control");
+                        drawControl.setDrawingOptions({
+                            polygon: false,
+                            rectangle: false,
+
+                        });
+                        model.map.removeControl(drawControl);
+                        model.map.addControl(drawControl);
+
+                        // process flight path
+                        var type = e.layerType,
+                            layer = e.layer;
+
+                        if (type === 'polygon' || type === "rectangle") {
+
+                            model.poly = layer;
+                            model.updateFlightPlan();
+                        }
+                    });
+
+
+                    model.map.on('draw:edited', function(e) {
+
+                        var layers = e.layers;
+                        layers.eachLayer(function(layer) {
+                            if (layer instanceof L.Polygon) {
+                                //Do marker specific actions here
+                                model.poly = layer;
+                                model.updateFlightPlan();
+                            }
+                        });
+
+
+                    });
+
+                    model.map.on('draw:deletestop', function(e) {
+                        drawControl.setDrawingOptions({
+                            polygon: {
+                                allowIntersection: false,
+                                showArea: true
+                            },
+                            rectangle: {
+                                allowIntersection: false,
+                                showArea: true
+                            },
+                        });
+                        model.map.removeControl(drawControl);
+                        model.map.addControl(drawControl);
+
+                        model.flightLayer.clearLayers();
+
+                    });
+
+
+                });
+            },
+
+
+            getFOV: function(flyalt, focallen, sensorwidth, sensorheight) {
+                var flscale = (1000 * flyalt) / focallen;
+
+                //   mm * mm / 1000
+                var viewwidth = (sensorwidth * flscale / 1000);
+                var viewheight = (sensorheight * flscale / 1000);
+
+                var fovh1 = (Math.atan(sensorwidth / (2 * focallen)) * this.rad2deg * 2);
+                var fovv1 = (Math.atan(sensorheight / (2 * focallen)) * this.rad2deg * 2);
+
+                return {
+                    viewheight: viewheight,
+                    viewwidth: viewwidth
+                };
+                // fovh = viewwidth;
+                // fovv = viewheight;
+            },
+
+            updateFlightPlan: function() {
+
+
+
+                var model = this;
+
+
+
+
+
+                model.debounce('update-flight', function() {
+                    if (!model.poly) {
+                        return;
+                    }
+                    model.flightLayer.clearLayers();
+                    // here you got the polygon points
+                    var points = model.poly._latlngs;
+
+                    // here you can get it in geojson format
+                    var geojson = model.poly.toGeoJSON();
+                    console.log(geojson);
+
+                    // calculate from mavic pro dems
+                    var imagewidth = 4000;
+                    var imageheight = 3000;
+                    var overlap = model.frontlap;
+                    var sidelap = model.sidelap;
+                    var fov = model.getFOV(model.altitude * 0.3048, 5, 6.17, 4.55);
+                    var viewheight = fov.viewheight;
+                    var viewwidth = fov.viewwidth;
+                    model.cmpx = ((viewheight / imageheight) * 100);
+                    model.inpx = (((viewheight / imageheight) * 100) * 0.393701);
+                    var spacing = ((1 - (overlap / 100.0)) * viewheight);
+                    var distance = ((1 - (sidelap / 100.0)) * viewwidth);
+
+                    // list, alt, distance, spacing, angle,
+                    var grid = this.buildFromGeoJson(geojson.geometry.coordinates[0],
+                        model.altitude * 0.3048, // alt
+                        distance, //distance
+                        spacing, // spacing
+                        model.angle, // angle
+                        0, // overshoot1
+                        0, // overshoot2
+                        StartPosition.BottomLeft, // startpos
+                        true, //shutter
+                        0, //Math.min(model.altitude, 120), // lane seperation
+                        0 //leadin
+                    );
+
+                    model.plan = grid.plan;
+                    console.log(grid);
+
+                    var totalFeet = grid.distance * 3.28084;
+
+                    if (totalFeet > 4000) {
+                        model.totalDistanceString = (totalFeet / 5280) + "m";
+                    } else {
+                        model.totalDistanceString = totalFeet + "ft";
+                    }
+
+
+
+
+
+
+                    var pointList = [];
+                    var i = 1;
+                    var count = 0;
+
+
+
+
+                    grid.plan.forEach(function(llp) {
+
+                        if (llp.tag !== "M") {
+                            pointList.push(new L.LatLng(llp.lat, llp.lng));
+                        } else {
+                            count++;
+                        }
+                        var marker = L.marker([llp.lat, llp.lng]);
+                        marker.bindPopup("Point " + i)
+                        model.flightLayer.addLayer(marker);
+
+                        i++;
+                    });
+
+                    model.imagecount = count;
+
+
+
+
+
+                    model.firstpolyline = new L.Polyline(pointList, {
+                        color: 'red',
+                        weight: 3,
+                        opacity: 0.5,
+                        smoothFactor: 1
+                    });
+                    //firstpolyline.addTo(model.flightLayer);
+
+                    model.flightLayer.addLayer(model.firstpolyline);
+
+                });
+            },
+
+            _angleUpdated: function() {
+                this.updateFlightPlan();
+            },
+
+            _updatePlan: function() {
+                this.updateFlightPlan();
+            },
+
+            _exportLitchi: function() {
+                var model = this;
+                var header = [
+                    'latitude',
+                    'longitude',
+                    'altitude(m)',
+                    'heading(deg)',
+                    'curvesize(m)',
+                    'rotationdir',
+                    'gimbalmode',
+                    'gimbalpitchangle',
+                    'actiontype1',
+                    'actionparam1',
+                    'actiontype2',
+                    'actionparam2',
+                    'actiontype3',
+                    'actionparam3',
+                    'actiontype4',
+                    'actionparam4',
+                    'actiontype5',
+                    'actionparam5',
+                    'actiontype6',
+                    'actionparam6',
+                    'actiontype7',
+                    'actionparam7',
+                    'actiontype8',
+                    'actionparam8',
+                    'actiontype9',
+                    'actionparam9',
+                    'actiontype10',
+                    'actionparam10',
+                    'actiontype11',
+                    'actionparam11',
+                    'actiontype12',
+                    'actionparam12',
+                    'actiontype13',
+                    'actionparam13',
+                    'actiontype14',
+                    'actionparam14',
+                    'actiontype15',
+                    'actionparam15'
+                ];
+
+
+                var csvContent = "data:text/csv;charset=utf-8,";
+
+                csvContent += header.join(',') + "\n";
+
+
+                var lastBearing = model.angle;
+                for (var i = 0; i < model.plan.length; i++) {
+                    var llp = model.plan[i];
+
+                    if (i + 1 < model.plan.length) {
+                        var nextllp = model.plan[i + 1];
+                        lastBearing = llp.getBearing(nextllp);
+                    }
+
+                    var row = [llp.lat, //'latitude',
+                        llp.lng, //'longitude',
+                        llp.alt, //'altitude(m)',
+                        lastBearing, //'heading(deg)',
+                        0, //'curvesize(m)',
+                        0, //'rotationdir',
+                        0, //'gimbalmode',
+                        -90, //'gimbalpitchangle',
+                        5, //'actiontype1',
+                        -90, // 'actionparam1',
+                        1, //'actiontype2',
+                        0, //'actionparam2',
+                        -1, //'actiontype3',
+                        0, //'actionparam3',
+                        -1, //'actiontype4',
+                        0, //'actionparam4',
+                        -1, //'actiontype5',
+                        0, //'actionparam5',
+                        -1, //'actiontype6',
+                        0, //'actionparam6',
+                        -1, //'actiontype7',
+                        0, //'actionparam7',
+                        -1, //'actiontype8',
+                        0, //'actionparam8',
+                        -1, //'actiontype9',
+                        0, //'actionparam9',
+                        -1, //'actiontype10',
+                        0, //'actionparam10',
+                        -1, //'actiontype11',
+                        0, //'actionparam11',
+                        -1, //'actiontype12',
+                        0, //'actionparam12',
+                        -1, //'actiontype13',
+                        0, //'actionparam13',
+                        -1, //'actiontype14',
+                        0, //'actionparam14',
+                        -1, //'actiontype15',
+                        0, //'actionparam15'
+                    ];
+                    if (llp.tag === "M") {
+                        csvContent += row.join(',') + "\n";
+                    }
+                }
+
+                // model.plan.forEach(function(llp) {
+                //     var row = [llp.lat, //'latitude',
+                //         llp.lng, //'longitude',
+                //         llp.alt, //'altitude(m)',
+                //         model.angle, //'heading(deg)',
+                //         0, //'curvesize(m)',
+                //         0, //'rotationdir',
+                //         0, //'gimbalmode',
+                //         -90, //'gimbalpitchangle',
+                //         5, //'actiontype1',
+                //         -90, // 'actionparam1',
+                //         1, //'actiontype2',
+                //         0, //'actionparam2',
+                //         -1, //'actiontype3',
+                //         0, //'actionparam3',
+                //         -1, //'actiontype4',
+                //         0, //'actionparam4',
+                //         -1, //'actiontype5',
+                //         0, //'actionparam5',
+                //         -1, //'actiontype6',
+                //         0, //'actionparam6',
+                //         -1, //'actiontype7',
+                //         0, //'actionparam7',
+                //         -1, //'actiontype8',
+                //         0, //'actionparam8',
+                //         -1, //'actiontype9',
+                //         0, //'actionparam9',
+                //         -1, //'actiontype10',
+                //         0, //'actionparam10',
+                //         -1, //'actiontype11',
+                //         0, //'actionparam11',
+                //         -1, //'actiontype12',
+                //         0, //'actionparam12',
+                //         -1, //'actiontype13',
+                //         0, //'actionparam13',
+                //         -1, //'actiontype14',
+                //         0, //'actionparam14',
+                //         -1, //'actiontype15',
+                //         0, //'actionparam15'
+                //     ];
+                //     csvContent += row.join(',') + "\n";
+                // });
+
+
+
+                var encodedUri = encodeURI(csvContent);
+                var link = document.createElement("a");
+                link.setAttribute("href", encodedUri);
+                link.setAttribute("download", "mission.csv");
+                document.body.appendChild(link); // Required for FF
+
+                link.click();
+
+                document.body.removeChild(link);
+
+            }
+
+        });
+    </script>
+</dom-module>

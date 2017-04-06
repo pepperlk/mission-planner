@@ -1,0 +1,915 @@
+<script>
+    if (Number.prototype.toRadians === undefined) {
+        Number.prototype.toRadians = function() {
+            return this * Math.PI / 180;
+        };
+    }
+
+    /** Extend Number object with method to convert radians to numeric (signed) degrees */
+    if (Number.prototype.toDegrees === undefined) {
+        Number.prototype.toDegrees = function() {
+            return this * 180 / Math.PI;
+        };
+    }
+
+
+    gridBehavior = {
+        buildFromGeoJson: function(coords,
+            altitude,
+            distance,
+            spacing,
+            angle,
+            overshoot1,
+            overshoot2,
+            startpos,
+            shutter,
+            minLaneSeparation,
+            leadin
+        ) {
+            var model = this;
+
+            var flightpath = [];
+            var polygon = [];
+            coords.forEach(function(coord) {
+                polygon.push(new PointLatLngAlt(coord[1], coord[0]))
+            });
+
+            console.log(polygon);
+
+
+            // varsetup     
+            if (!spacing || spacing < 4 && spacing != 0) {
+                spacing = 4;
+            }
+
+            if (!distance || distance < 0.1) {
+                distance = 0.1;
+            }
+
+            if (!polygon || polygon.length < 1) {
+                return [];
+            }
+
+            if (!minLaneSeparation) {
+                minLaneSeparation = 0;
+            }
+
+            if (!angle) {
+                angle = 0;
+            }
+
+            angle = angle - 90;
+
+
+            // Make a non round number in case of corner cases
+            //if (minLaneSeparation !== 0)
+            minLaneSeparation += 0.5;
+            // Lane Separation in meters
+            var minLaneSeparationINMeters = minLaneSeparation * distance;
+
+            var ans = [];
+
+
+
+            // utm zone distance calcs will be done in
+            var utmzone = polygon[0].getUTMZone(); //.GetUTMZone();
+
+            var utmpositions = model.pointsToUTM(utmzone, polygon);
+
+
+
+            // close the loop if its not already
+            if (utmpositions[0].x != utmpositions[utmpositions.length - 1].x && utmpositions[0].y != utmpositions[utmpositions.length - 1].y) {
+                utmpositions.push(utmpositions[0]); // make a full loop
+            }
+
+            var area = model.getPolyMinMax(utmpositions);
+
+
+            var diagdist = area.diagDistance();
+
+            var grid = [];
+            var lines = 0;
+            var x = area.midWidth();
+            var y = area.midHeight();
+            // Needed?
+            //flightpath.push(new PointLatLngAlt().fromUtm(x, y, utmzone));
+
+
+            // get left extent
+            var xb1 = x;
+            var yb1 = y;
+            // to the left
+            var retle = this.newpos(xb1, yb1, angle - 90, diagdist / 2 + distance);
+            xb1 = retle.x;
+            yb1 = retle.y;
+
+            retle = this.newpos(xb1, yb1, angle + 180, diagdist / 2 + distance);
+            xb1 = retle.x;
+            yb1 = retle.y;
+
+            var left = new utmpos(xb1, yb1, utmzone);
+            //flightpath.push(left);
+
+
+            // get right extent
+            var xb2 = x;
+            var yb2 = y;
+            // to the right
+            var retle = this.newpos(xb2, yb2, angle - 90, diagdist / 2 + distance);
+            xb2 = retle.x;
+            yb2 = retle.y;
+
+            retle = this.newpos(xb2, yb2, angle + 180, diagdist / 2 + distance);
+            xb2 = retle.x;
+            yb2 = retle.y;
+
+            var right = new utmpos(xb2, yb2, utmzone);
+            // flightpath.push(right);
+
+
+
+            // set start point to left hand side
+            x = xb1;
+            y = yb1;
+
+            // draw the outergrid, this is a grid that cover the entire area of the rectangle plus more.
+            while (lines < ((diagdist + distance * 2) / distance)) {
+                // copy the start point to generate the end point
+                var nx = x;
+                var ny = y;
+                ///newpos(ref nx, ref ny, angle, diagdist + distance * 2);
+
+                retle = this.newpos(nx, ny, angle, diagdist + distance * 2);
+                nx = retle.x;
+                ny = retle.y;
+
+
+                var line = new linelatlng();
+                line.p1 = new utmpos(x, y, utmzone);
+                line.p2 = new utmpos(nx, ny, utmzone);
+                line.basepnt = new utmpos(x, y, utmzone);
+                grid.push(line);
+
+                // addtomap(line);
+
+                // newpos(ref x, ref y, angle + 90, distance);
+
+                retle = this.newpos(x, y, angle + 90, distance);
+                x = retle.x;
+                y = retle.y;
+
+                lines++;
+            }
+
+
+            // find intersections with our polygon
+
+            // store lines that dont have any intersections
+            var remove = [];
+
+            var gridno = grid.length;
+
+            // cycle through our grid
+            for (var a = 0; a < gridno; a++) {
+                var closestdistance = 10000000.0;
+                var farestdistance = -10000000.0;
+
+                var closestpoint = new utmpos().getUtmZero(); //utmpos.Zero;
+                var farestpoint = new utmpos().getUtmZero(); //utmpos.Zero;
+
+                // somewhere to store our intersections
+                var matchs = [];
+
+                var b = -1;
+                var crosses = 0;
+                var newutmpos = new utmpos().getUtmZero();
+                utmpositions.forEach(function(pnt) {
+
+
+                    //foreach(utmpos pnt in utmpositions) {
+                    b++;
+                    if (b == 0) {
+                        //continue;
+                        // inverted
+                    } else {
+                        newutmpos = model.findLineIntersection(utmpositions[b - 1], utmpositions[b], grid[a].p1, grid[a].p2);
+                        if (!newutmpos.isZero()) {
+                            crosses++;
+                            matchs.push(newutmpos);
+                            if (closestdistance > grid[a].p1.getDistance(newutmpos)) {
+                                closestpoint.y = newutmpos.y;
+                                closestpoint.x = newutmpos.x;
+                                closestpoint.zone = newutmpos.zone;
+                                closestdistance = grid[a].p1.getDistance(newutmpos);
+                            }
+                            if (farestdistance < grid[a].p1.getDistance(newutmpos)) {
+                                farestpoint.y = newutmpos.y;
+                                farestpoint.x = newutmpos.x;
+                                farestpoint.zone = newutmpos.zone;
+                                farestdistance = grid[a].p1.getDistance(newutmpos);
+                            }
+                        }
+                    }
+
+
+                });
+
+
+                if (crosses == 0) // outside our polygon
+                {
+                    if (!model.pointInPolygon(grid[a].p1, utmpositions) && !model.pointInPolygon(grid[a].p2, utmpositions)) {
+                        remove.push(grid[a]);
+                    }
+                }
+                //
+                else if (crosses == 1) // bad - shouldnt happen
+                {
+                    // var line = grid[a];
+                    // line.p1 = farestpoint;
+                    //line.p2 = farestpoint;
+                    //grid[a] = line;
+
+                    //remove.push(grid[a]);
+                    // throw "error";
+                }
+                //
+                else if (crosses == 2) // simple start and finish : mod here
+                {
+                    var line = grid[a];
+                    line.p1 = closestpoint;
+                    line.p2 = farestpoint;
+                    grid[a] = line;
+                }
+                //
+                else // multiple intersections
+                {
+                    var line = grid[a];
+                    remove.push(line);
+
+                    while (matchs.length > 1) {
+                        var newline = new linelatlng();
+
+                        closestpoint = model.findClosestPoint(closestpoint, matchs);
+                        newline.p1 = closestpoint;
+
+                        matchs = matchs.filter(function(itm) {
+                            return itm.x !== closestpoint.x && itm.y !== closestpoint.y;
+                        });
+
+                        //matchs.Remove(closestpoint);
+
+
+                        closestpoint = model.findClosestPoint(closestpoint, matchs);
+                        newline.p2 = closestpoint;
+                        //matchs.Remove(closestpoint);
+                        matchs = matchs.filter(function(itm) {
+                            return itm.x !== closestpoint.x && itm.y !== closestpoint.y;
+                        });
+
+                        newline.basepnt = line.basepnt;
+
+                        grid.push(newline);
+                    }
+                }
+            }
+
+
+            remove.forEach(function(line) {
+                grid = grid.filter(function(itm) {
+                    return itm.p1.x !== line.p1.x &&
+                        itm.p1.y !== line.p1.y &&
+                        itm.p2.x !== line.p2.x &&
+                        itm.p2.y !== line.p2.y;
+                });
+            });
+
+            // grid.forEach(function(line) {
+            //     flightpath.push(line);
+            // });
+
+
+            if (grid.length == 0) {
+                return ans;
+            }
+
+
+
+            var startposutm = new utmpos(area.left, area.bottom, utmzone);
+
+            switch (startpos) {
+
+                case StartPosition.BottomLeft:
+                    {
+
+                        startposutm = new utmpos(area.left, area.bottom, utmzone);
+                        break;
+                    }
+                case StartPosition.BottomRight:
+                    {
+                        startposutm = new utmpos(area.right, area.bottom, utmzone);
+                        break;
+                    }
+                case StartPosition.TopLeft:
+                    {
+                        startposutm = new utmpos(area.left, area.top, utmzone);
+                        break;
+                    }
+                case StartPosition.TopRight:
+                    {
+                        startposutm = new utmpos(area.right, area.top, utmzone);
+                        break;
+                    }
+                default:
+                    {
+                        break;
+                    }
+
+            }
+
+
+
+            startposutm = model.findClosestPoint(startposutm, utmpositions);
+            var closest = model.findClosestLine(startposutm, grid, 0 /*Lane separation does not apply to starting point*/ , angle);
+
+            var lastpnt;
+            if (closest.p1.getDistance(startposutm) < closest.p2.getDistance(startposutm)) {
+                lastpnt = closest.p1;
+            } else {
+                lastpnt = closest.p2;
+            }
+
+            // S =  start
+            // E = end
+            // ME = middle end
+            // SM = start middle
+
+
+            var copygrid = JSON.parse(JSON.stringify(grid));
+
+            while (grid.length > 0) {
+                // for each line, check which end of the line is the next closest
+                if (closest.p1.getDistance(lastpnt) < closest.p2.getDistance(lastpnt)) {
+                    var newstart = model.newposutm(closest.p1, angle, -leadin);
+                    newstart.tag = "S";
+
+
+                    //flightpath.push(newstart);
+                    //addtomap(newstart, "S");
+                    ans.push(newstart);
+
+                    closest.p1.tag = "SM";
+                    //addtomap(closest.p1, "SM");
+                    ans.push(closest.p1);
+
+                    if (spacing > 0) {
+                        for (var d = (spacing - ((closest.basepnt.getDistance(closest.p1)) % spacing)); d < (closest.p1.getDistance(closest.p2)); d += spacing) {
+                            var ax = closest.p1.x;
+                            var ay = closest.p1.y;
+
+                            var retle = model.newpos(ax, ay, angle, d);
+                            ax = retle.x;
+                            ay = retle.y;
+
+                            //newpos(ref ax, ref ay, angle, d);
+
+                            var utmpos1 = new utmpos(ax, ay, utmzone);
+                            utmpos1.tag = "M"
+
+                            //addtomap(utmpos1, "M");
+                            ans.push(utmpos1);
+                        }
+                    }
+                    closest.p2.tag = "ME";
+                    // addtomap(closest.p2, "ME");
+                    ans.push(closest.p2);
+
+                    var newend = model.newposutm(closest.p2, angle, overshoot1);
+                    newend.tag = "E";
+                    //addtomap(newend, "E");
+                    ans.push(newend);
+
+                    lastpnt = closest.p2;
+
+                    //grid.Remove(closest);
+
+                    grid = grid.filter(function(itm) {
+                        return itm.p1.x !== closest.p1.x &&
+                            itm.p1.y !== closest.p1.y &&
+                            itm.p2.x !== closest.p2.x &&
+                            itm.p2.y !== closest.p2.y;
+                    });
+
+
+
+                    if (grid.length == 0) {
+                        break;
+                    }
+
+                    closest = model.findClosestLine(newend, grid, minLaneSeparationINMeters, angle);
+
+
+
+                } else {
+
+                    var newstart = model.newposutm(closest.p2, angle, leadin);
+                    newstart.tag = "S";
+
+                    ans.push(newstart);
+
+                    closest.p2.tag = "SM";
+
+                    ans.push(closest.p2);
+
+                    if (spacing > 0) {
+                        for (var d = ((closest.basepnt.getDistance(closest.p2)) % spacing); d < (closest.p1.getDistance(closest.p2)); d += spacing) {
+                            var ax = closest.p2.x;
+                            var ay = closest.p2.y;
+
+
+                            var retle = model.newpos(ax, ay, angle, -d);
+                            ax = retle.x;
+                            ay = retle.y;
+
+
+                            var utmpos2 = new utmpos(ax, ay, utmzone);
+                            utmpos2.tag = "M"
+
+                            ans.push(utmpos2);
+                        }
+
+                    }
+                    closest.p1.tag = "ME";
+
+                    ans.push(closest.p1);
+
+                    var newend = model.newposutm(closest.p1, angle, -overshoot2);
+                    newend.tag = "E";
+
+                    ans.push(newend);
+
+                    lastpnt = closest.p1;
+
+                    grid = grid.filter(function(itm) {
+                        return itm.p1.x !== closest.p1.x &&
+                            itm.p1.y !== closest.p1.y &&
+                            itm.p2.x !== closest.p2.x &&
+                            itm.p2.y !== closest.p2.y;
+                    });
+                    if (grid.length == 0) {
+                        break;
+                    }
+                    closest = model.findClosestLine(newend, grid, minLaneSeparationINMeters, angle);
+
+                }
+            }
+
+
+            var fp = [];
+
+
+            var photos = [];
+
+            var distanceinMeters = 0;
+            var lastItm = null;
+
+            ans.forEach(function(itm) {
+
+                itm.alt = altitude;
+                if (lastItm != null) {
+                    distanceinMeters += itm.getDistance(lastItm);
+                }
+
+
+                var lla = itm.LLA(utmzone);
+
+                if (fp.length > 0) {
+                    if (!(fp[fp.length - 1].lat === lla.lat && fp[fp.length - 1].lng === lla.lng)) {
+                        lla.tag = itm.tag;
+                        fp.push(lla);
+                        if (itm.tag == "M") {
+                            photos.push(lla);
+                        }
+                    }
+                } else {
+                    fp.push(lla);
+                    lla.tag = itm.tag;
+                    if (itm.tag == "M") {
+                        photos.push(lla);
+                    }
+                }
+
+
+
+            });
+
+
+
+
+
+
+            return {
+                grid: copygrid,
+                plan: fp,
+                photos: photos,
+                distance: distanceinMeters,
+            };
+
+        },
+
+
+        addAngle: function(angle, degrees) {
+            angle += degrees;
+
+            angle = angle % 360;
+
+            while (angle < 0) {
+                angle += 360;
+            }
+            return angle;
+        },
+
+        newposutm: function(input, bearing, distance) {
+            var degN = 90 - bearing;
+            if (degN < 0)
+                degN += 360;
+            var x = input.x + distance * Math.cos(degN * this.deg2rad);
+            var y = input.y + distance * Math.sin(degN * this.deg2rad);
+
+            return new utmpos(x, y, input.zone);
+        },
+
+        findClosestLine: function(start, list, minDistance, angle) {
+            var model = this;
+            // By now, just add 5.000 km to our lines so they are long enough to allow intersection
+            var METERS_TO_EXTEND = 5000000;
+
+            var perperndicularOrientation = model.addAngle(angle, 90);
+
+            // Calculation of a perpendicular line to the grid lines containing the "start" point
+            /*
+             *  --------------------------------------|------------------------------------------
+             *  --------------------------------------|------------------------------------------
+             *  -------------------------------------start---------------------------------------
+             *  --------------------------------------|------------------------------------------
+             *  --------------------------------------|------------------------------------------
+             *  --------------------------------------|------------------------------------------
+             *  --------------------------------------|------------------------------------------
+             *  --------------------------------------|------------------------------------------
+             */
+            var start_perpendicular_line = model.newposutm(start, perperndicularOrientation, -METERS_TO_EXTEND);
+            var stop_perpendicular_line = model.newposutm(start, perperndicularOrientation, METERS_TO_EXTEND);
+
+            // Store one intersection point per grid line
+            var intersectedPoints = {};
+            // lets order distances from every intersected point per line with the "start" point
+            var ordered_min_to_max = {};
+
+            var ordered_keys = [];
+            list.forEach(function(line) {
+
+
+                // Extend line at both ends so it intersecs for sure with our perpendicular line
+                var extended_line_start = model.newposutm(line.p1, angle, -METERS_TO_EXTEND);
+                var extended_line_stop = model.newposutm(line.p2, angle, METERS_TO_EXTEND);
+                // Calculate intersection point
+                var p = model.findLineIntersection(extended_line_start, extended_line_stop, start_perpendicular_line, stop_perpendicular_line);
+
+                // Store it
+                intersectedPoints[p.getKey()] = line;
+
+                // Calculate distances between interesected point and "start" (i.e. line and start)
+
+                var distance_p = start.getDistance(p);
+                if (!ordered_min_to_max[distance_p]) {
+                    ordered_min_to_max[distance_p] = p;
+                    ordered_keys.push(distance_p);
+                }
+
+            });
+
+            // Acquire keys and sort them.
+            //var ordered_keys = Object.keys(ordered_min_to_max);
+            ordered_keys.sort(function(a, b) {
+                return a - b;
+            });
+
+            // Lets select a line that is the closest to "start" point but "mindistance" away at least.
+            // If we have only one line, return that line whatever the minDistance says
+            var key = Number.MAX_VALUE;
+            var i = 0;
+            while (key == Number.MAX_VALUE && i < ordered_keys.length) {
+                if (ordered_keys[i] >= minDistance)
+                    key = ordered_keys[i];
+                i++;
+            }
+
+            // If no line is selected (because all of them are closer than minDistance, then get the farest one
+            if (key == Number.MAX_VALUE) {
+                key = ordered_keys[ordered_keys.length - 1];
+            }
+
+            // return line
+            return intersectedPoints[ordered_min_to_max[key].getKey()];
+
+        },
+
+
+
+        findClosestPoint: function(start, list) {
+            var answer = new utmpos().getUtmZero();
+            var currentbest = Number.MAX_VALUE;
+
+
+
+            list.forEach(function(pnt) {
+                var dist1 = start.getDistance(pnt);
+
+                if (dist1 < currentbest) {
+                    answer = pnt;
+                    currentbest = dist1;
+                }
+            })
+            return answer;
+
+        },
+
+        pointInPolygon: function(p, poly) {
+            var p1, p2;
+            var inside = false;
+
+            if (poly.length < 3) {
+                return inside;
+            }
+
+            var oldPoint = poly[poly.length - 1]; // new utmpos(poly[poly.length - 1].x, poly[poly.length - 1].y, poly[poly.length - 1].zone);
+
+
+            for (var i = 0; i < poly.length; i++) {
+
+                var newPoint = new utmpos(poly[i].x, poly[i].y, poly[i].zone);
+
+                if (newPoint.y > oldPoint.y) {
+                    p1 = oldPoint;
+                    p2 = newPoint;
+                } else {
+                    p1 = newPoint;
+                    p2 = oldPoint;
+                }
+
+                if ((newPoint.y < p.y) == (p.y <= oldPoint.y) &&
+                    (p.x - p1.x) * (p2.y - p1.y) <
+                    (p2.x - p1.x) * (p.y - p1.y)) {
+                    inside = !inside;
+                }
+                oldPoint = newPoint;
+            }
+            return inside;
+        },
+
+
+        findLineIntersection: function(start1, end1, start2, end2) {
+            var denom = ((end1.x - start1.x) * (end2.y - start2.y)) - ((end1.y - start1.y) * (end2.x - start2.x));
+
+            if (denom == 0) {
+                return new utmpos().getUtmZero();
+
+            }
+            var numer = ((start1.y - start2.y) * (end2.x - start2.x)) - ((start1.x - start2.x) * (end2.y - start2.y));
+            var r = numer / denom;
+            var numer2 = ((start1.y - start2.y) * (end1.x - start1.x)) - ((start1.x - start2.x) * (end1.y - start1.y));
+            var s = numer2 / denom;
+            if ((r < 0 || r > 1) || (s < 0 || s > 1)) {
+                return new utmpos().getUtmZero();
+            }
+
+            var result = new utmpos().getUtmZero();
+
+            result.x = start1.x + (r * (end1.x - start1.x));
+            result.y = start1.y + (r * (end1.y - start1.y));
+            result.zone = start1.zone;
+            return result;
+        },
+
+
+        rad2deg: (180 / Math.PI),
+        deg2rad: (1.0 / (180 / Math.PI)),
+
+        newpos: function(x, y, bearing, distance) {
+            var degN = 90 - bearing;
+            if (degN < 0)
+                degN += 360;
+            x = x + distance * Math.cos(degN * this.deg2rad);
+            y = y + distance * Math.sin(degN * this.deg2rad);
+            return {
+                x: x,
+                y: y
+            };
+        },
+
+        getPolyMinMax: function(utmpositions) {
+            if (utmpositions.lenth == 0)
+                return [0, 0, 0, 0]
+
+            var minx, miny, maxx, maxy;
+
+            minx = maxx = utmpositions[0].x; //x
+            miny = maxy = utmpositions[0].y; //y
+
+
+            utmpositions.forEach(function(pnt) {
+                minx = Math.min(minx, pnt.x);
+                maxx = Math.max(maxx, pnt.x);
+
+                miny = Math.min(miny, pnt.y);
+                maxy = Math.max(maxy, pnt.y);
+            });
+
+            // for (var i = 0; i < utmpositions.length; i++) {
+
+            //     minx = Math.min(minx, utmpositions[i].x); // x
+            //     maxx = Math.max(maxx, utmpositions[i].y); // y
+
+            //     miny = Math.min(miny, utmpositions[i].x); //x
+            //     maxy = Math.max(maxy, utmpositions[i].y); //y
+            // }
+
+            return new MPRect(minx, maxy, maxx - minx, miny - maxy);
+        },
+
+        pointsToUTM: function(utmzone, list) {
+            console.log(utmzone);
+            var utm = "+proj=utm +zone=" + Math.abs(utmzone);
+            var wgs84 = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs";
+
+            var firstProjection = 'PROJCS["NAD83 / Massachusetts Mainland",GEOGCS["NAD83",DATUM["North_American_Datum_1983",SPHEROID["GRS 1980",6378137,298.257222101,AUTHORITY["EPSG","7019"]],AUTHORITY["EPSG","6269"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.01745329251994328,AUTHORITY["EPSG","9122"]],AUTHORITY["EPSG","4269"]],UNIT["metre",1,AUTHORITY["EPSG","9001"]],PROJECTION["Lambert_Conformal_Conic_2SP"],PARAMETER["standard_parallel_1",42.68333333333333],PARAMETER["standard_parallel_2",41.71666666666667],PARAMETER["latitude_of_origin",41],PARAMETER["central_meridian",-71.5],PARAMETER["false_easting",200000],PARAMETER["false_northing",750000],AUTHORITY["EPSG","26986"],AXIS["X",EAST],AXIS["Y",NORTH]]';
+
+
+            var from = new proj4.Proj(wgs84);
+            var projzone = new proj4.Proj(utm);
+            var ol = [];
+            for (var i = 0; i < list.length; i++) {
+
+                var p = proj4('+proj=utm +zone=' + Math.floor(Math.abs(utmzone)), [list[i].lng, list[i].lat]);
+                var obj = new utmpos(p[1], p[0], Math.floor(Math.abs(utmzone)));
+
+                ol.push(obj);
+
+            }
+            return ol;
+
+        },
+
+        getUTMZone: function(point) {
+
+
+
+
+            var zone = ((point[0] - -186.0) / 6.0);
+            if (point[1] < 0) {
+                zone *= -1;
+            }
+
+            return zone;
+        }
+
+
+    }
+
+    function PointLatLngAlt(lat, lng) {
+        this.lat = lat;
+        this.lng = lng;
+        this.alt = 0;
+
+        this.getUTMZone = function() {
+
+
+
+            var zone = ((this.lng - -186.0) / 6.0);
+            if (this.lat < 0) {
+                zone *= -1;
+            }
+            return Math.floor(Math.abs(zone));
+            //return zone;
+        }
+
+        this.getBearing = function(point) {
+            var φ1 = this.lat.toRadians(),
+                φ2 = point.lat.toRadians();
+            var Δλ = (point.lng - this.lng).toRadians();
+            // if dLon over 180° take shorter rhumb line across the anti-meridian:
+            if (Math.abs(Δλ) > Math.PI) Δλ = Δλ > 0 ? -(2 * Math.PI - Δλ) : (2 * Math.PI + Δλ);
+
+            var Δψ = Math.log(Math.tan(φ2 / 2 + Math.PI / 4) / Math.tan(φ1 / 2 + Math.PI / 4));
+
+            var θ = Math.atan2(Δλ, Δψ);
+
+            return (θ.toDegrees() + 360) % 360;
+        }
+
+        this.toUTM = function(utmzone) {
+                if (!utmzone) {
+                    utmzone = this.getUTMZone();
+                }
+                var utm = "+proj=utm +zone=" + Math.abs(utmzone); // +zone=" + Math.abs(utmzone);
+                var wgs84 = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs";
+
+                var firstProjection = 'PROJCS["NAD83 / Massachusetts Mainland",GEOGCS["NAD83",DATUM["North_American_Datum_1983",SPHEROID["GRS 1980",6378137,298.257222101,AUTHORITY["EPSG","7019"]],AUTHORITY["EPSG","6269"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.01745329251994328,AUTHORITY["EPSG","9122"]],AUTHORITY["EPSG","4269"]],UNIT["metre",1,AUTHORITY["EPSG","9001"]],PROJECTION["Lambert_Conformal_Conic_2SP"],PARAMETER["standard_parallel_1",42.68333333333333],PARAMETER["standard_parallel_2",41.71666666666667],PARAMETER["latitude_of_origin",41],PARAMETER["central_meridian",-71.5],PARAMETER["false_easting",200000],PARAMETER["false_northing",750000],AUTHORITY["EPSG","26986"],AXIS["X",EAST],AXIS["Y",NORTH]]';
+
+
+
+                var p = proj4('+proj=utm +zone=' + Math.floor(Math.abs(utmzone)), [this.lng, this.lat]);
+                var obj = new utmpos(p[1], p[0], Math.floor(Math.abs(utmzone)));
+                //     x: p[1],
+                return obj;
+
+
+            },
+
+            this.fromUtm = function(x, y, utmzone) {
+                var p = proj4('+proj=utm +zone=' + Math.floor(Math.abs(utmzone)), 'WGS84', [y, x]);
+                return new PointLatLngAlt(p[1], p[0]);
+            }
+    }
+
+    function MPRect(left, top, width, height) {
+        this.left = left;
+        this.top = top;
+        this.right = left + width;
+        this.bottom = top + height;
+
+
+        this.width = this.right - this.left;
+        this.height = this.top - this.bottom;
+        this.midWidth = function() {
+            return ((this.right - this.left) / 2) + this.left;
+        }
+        this.midHeight = function() {
+            return ((this.top - this.bottom) / 2) + this.bottom;
+        }
+
+        this.diagDistance = function() {
+            return Math.sqrt(Math.pow(this.width, 2) + Math.pow(this.height, 2));
+        }
+
+
+
+    }
+
+
+    function linelatlng() {
+        this.p1 = null;
+        this.p2 = null;
+        this.basepnt = null;
+    }
+
+    function utmpos(x, y, zone) {
+
+        this.x = x;
+        this.y = y;
+        this.zone = zone;
+        this.alt = 0;
+        this.tag = '';
+
+        this.getUtmZero = function() {
+            return new utmpos(0, 0, 0);
+
+        };
+
+
+        this.getKey = function() {
+            return '' + this.x + '_' + this.y;
+        }
+
+
+        this.isZero = function() {
+            return this.x === 0 && this.y === 0 && this.zone === 0;
+        };
+
+        this.getDistance = function(b) {
+            return Math.sqrt(Math.pow(Math.abs(this.x - b.x), 2) + Math.pow(Math.abs(this.y - b.y), 2));
+        }
+
+
+        this.LLA = function(utmzone) {
+            if (utmzone) {
+                this.utmzone = utmzone;
+            }
+            var p = proj4('+proj=utm +zone=' + this.utmzone, 'WGS84', [this.y, this.x]);
+            var pt = new PointLatLngAlt(p[1], p[0]);
+            pt.alt = this.alt;
+            return pt;
+        }
+
+    }
+
+    var StartPosition = {
+        Home: 0,
+        BottomLeft: 1,
+        BottomRight: 2,
+        TopLeft: 2,
+        TopRight: 2,
+        BottomRight: 2,
+
+    }
+</script>
