@@ -42,7 +42,7 @@
           bottom: 0;
       }
       :host label{
-          display: block;
+          /*//display: block;*/
       }
     </style>
     <div style="position: relative;">
@@ -51,45 +51,64 @@
          <h2>Plan Flight</h2>
            <label> Altitude (ft)</label>
          <input type="number" min="20" max="1600"  value={{altitude::change}} />
+         <br/>
          <label> Grid Direction (Course)</label>
          <input type="number" min="0" max="360"  value={{angle::change}} />
+         <br/>
            <label> Sidelap (%)</label>
          <input type="number" min="30" max="75"  value={{sidelap::change}} />
+         <br/>
            <label> Overlap (%)</label>
          <input type="number" min="30" max="75"  value={{frontlap::change}} />
-         <h4>Advanced</h4>
+         <br/>
+             <label> Speed (mph)</label>
+         <input type="number" min="30" max="75"  value={{speed::change}} />
+         <br/>
+    <p>Camera</p>
                     <label> Focal Length (mm)</label>
          <input type="text"   value={{focallength::change}} />
+         <br/>
                              <label> Sensor Width (mm)</label>
          <input type="text"   value={{sensorwidth::change}} />
+         <br/>
                                       <label> Sensor Height (mm)</label>
          <input type="text"   value={{sensorheight::change}} />
+         <br/>
 
                                       <label> Image Width (px)</label>
          <input type="text"   value={{imagewidth::change}} />
+         <br/>
                                       <label> Image Height (px)</label>
          <input type="text"   value={{imageheight::change}} />
+         <br/>
 
 
     
 
 
      <div>
-         <button on-tap="_exportLitchi">Litchi Export (CSV)</button>
+         <button on-tap="_exportLitchi">Litchi Export All(CSV)</button>
+         <br/>
+             <button on-tap="_exportLitchiEndpoints">Litchi Export Endpoints(CSV)</button>
      </div>
      <div hidden$="{{!hasFlight}}">
      <h3>Flight Info</h3>
-     <label>Image Count</label>
-     <span>{{imagecount}}</span> Images
-     <label>Resolution</label>
-     <span>{{inpx}}</span> in/px
+     <label>Image Count</label> <br/>
+     <span>{{imagecount}}</span> Images <br/>
+     <label>Resolution</label> <br/>
+     <span>{{inpx}}</span> in/px <br/>
 
-         <label>Distance</label>
-     <span>{{totalDistanceString}}</span> 
-         <label>Flight time @ 22mph</label>
-     <span>{{flighttime}}</span> 
-            <label>Area (acres)</label>
-     <span>{{area}}</span> ac
+         <label>Distance</label> <br/>
+     <span>{{totalDistanceString}}</span>  <br/>
+         <label>Flight time @ {{speed}}mph</label> <br/>
+     <span>{{flighttime}}</span>  <br/>
+            <label>Area (acres)</label> <br/>
+     <span>{{area}}</span> ac <br/>
+
+         <label>Photo Timing (seconds)</label> <br/>
+     <span>{{photoEvery}}</span> <br/>
+
+
      </div>
 
 
@@ -123,12 +142,12 @@
 
                 sidelap: {
                     type: Number,
-                    value: 30,
+                    value: 70,
                     observer: '_angleUpdated'
                 },
                 frontlap: {
                     type: Number,
-                    value: 30,
+                    value: 60,
                     observer: '_angleUpdated'
                 },
                 focallength: {
@@ -156,6 +175,11 @@
                     value: 3000,
                     observer: '_angleUpdated'
                 },
+                speed: {
+                    type: Number,
+                    value: 33,
+                    observer: '_angleUpdated'
+                },
             },
             attached: function() {
                 var model = this;
@@ -163,7 +187,7 @@
                     model.map = L.map(this.$.map, {
                         zoomControl: false
                     }).setView([38.14, -98.82], 4);
-                    // model.map.setView([41.185, -104.82], 16);
+                    model.map.setView([41.185, -104.82], 16);
 
 
 
@@ -360,8 +384,8 @@
                     // calculate from mavic pro dems
                     var imagewidth = model.imagewidth;
                     var imageheight = model.imageheight;
-                    var overlap = model.frontlap;
-                    var sidelap = model.sidelap;
+                    var overlap = model.sidelap;
+                    var sidelap = model.frontlap;
                     var fov = model.getFOV(model.altitude * 0.3048, model.focallength, model.sensorwidth, model.sensorheight);
                     var viewheight = fov.viewheight;
                     var viewwidth = fov.viewwidth;
@@ -396,10 +420,15 @@
                     }
 
 
-                    var mph = 22;
+                    var mph = model.speed;
                     // seconds
                     model.flighttime = model.hhmmss((((totalFeet / 5280) / mph) * 60) * 60);
 
+
+                    var metersPerSec = model.speed * .44704;
+
+
+                    model.photoEvery = (distance / metersPerSec).toFixed(2);
 
 
 
@@ -425,17 +454,20 @@
                         if (llp.tag && llp.tag !== "M") {
                             pointList.push(new L.LatLng(llp.lat, llp.lng));
                             // draw footprints
-
+                            var marker = L.marker([llp.lat, llp.lng]);
+                            marker.bindPopup("Point " + i + " Tag: " + llp.tag)
+                            model.flightLayer.addLayer(marker);
 
 
 
 
                         } else {
+                            var marker = L.marker([llp.lat, llp.lng]);
+                            marker.bindPopup("Point " + i + " Tag: " + llp.tag)
+                            model.flightLayer.addLayer(marker);
                             count++;
                         }
-                        var marker = L.marker([llp.lat, llp.lng]);
-                        marker.bindPopup("Point " + i)
-                        model.flightLayer.addLayer(marker);
+
 
 
                         var startangle = lastBearing;
@@ -474,7 +506,11 @@
                 this.updateFlightPlan();
             },
 
-            _exportLitchi: function() {
+            _exportLitchiEndpoints: function(e) {
+                this._exportLitchi(e, true)
+            },
+
+            _exportLitchi: function(e, endpointsonly) {
                 var model = this;
                 var header = [
                     'latitude',
@@ -571,8 +607,14 @@
                         -1, //'actiontype15',
                         0, //'actionparam15'
                     ];
-                    if (llp.tag === "M") {
-                        csvContent += row.join(',') + "\n";
+                    if (endpointsonly) {
+                        if (llp.tag !== "M") {
+                            csvContent += row.join(',') + "\n";
+                        }
+                    } else {
+                        if (llp.tag === "M") {
+                            csvContent += row.join(',') + "\n";
+                        }
                     }
                 }
 
